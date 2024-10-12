@@ -14,10 +14,25 @@ services:
             timeout: 5s
         volumes:
             - postgres-data:/var/lib/postgresql/data/
-            # add initsql script to load fixtures
-            # - ./init_sql_scripts/init.sql:/docker-entrypoint-initdb.d/init.sql 
         networks:
             - shredder
+    
+    init-db:
+        image: zimmermantr/shredder_infrastructure:latest  # Uses the new Dockerfile.init image
+        depends_on:
+            database:
+                condition: service_healthy
+        environment:
+            POSTGRES_HOST: postgres
+            POSTGRES_PORT: "5432"
+            POSTGRES_DB: shredder_db
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        networks:
+            - shredder
+        command: ["sh", "-c", "until pg_isready -h $POSTGRES_HOST -p $POSTGRES_PORT -U $POSTGRES_USER; do echo 'Waiting for PostgreSQL...'; sleep 2; done; PGPASSWORD=$POSTGRES_PASSWORD psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U $POSTGRES_USER -d $POSTGRES_DB -f /app/db_backup.sql"]
+        volumes:
+            - ./db_backup.sql:/app/db_backup.sql
 
     backend:
         image: zimmermantr/shredder_back
@@ -31,6 +46,8 @@ services:
         depends_on:
             database:
                 condition: service_healthy
+            init-db:
+                condition: service_started
         healthcheck:
             test: ["CMD-SHELL", "wget -qO- http://backend:8000/api/v1/health_check/ | grep 'healthy'"]
             interval: 10s
@@ -38,7 +55,7 @@ services:
             start_period: 30s
             timeout: 5s
 
-    fronted:
+    frontend:
         image: zimmermantr/shredder_front
         container_name: frontend
         ports:
@@ -49,6 +66,18 @@ services:
             backend:
                 condition: service_healthy
     
+    nginx:
+        image: nginx:latest
+        container_name: nginx
+        ports:
+            - "30889:80"  # Expose Nginx on localhost:30889
+        volumes:
+            - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+        depends_on:
+            - frontend
+            - backend
+        networks:
+            - shredder
 networks:
     shredder:
         name: shredder
